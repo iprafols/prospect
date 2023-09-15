@@ -297,6 +297,22 @@ class ViewerCDS(object):
                                 'BOSS_TARGET1', 'BOSS_TARGET2',
                                 'ANCILLARY_TARGET1', 'ANCILLARY_TARGET2',
                                 'EBOSS_TARGET0', 'EBOSS_TARGET1', 'EBOSS_TARGET2']
+        elif survey == 'WEAVE':
+            nspec = spectra.num_spectra()
+            # Optional metadata:
+            fibermap_keys = ['FIBREID', 'CNAME', 'FIBRERA', 'FIBREDEC',
+                             'XPOSITION', 'YPOSITION', 'STATUS',
+                             'TARGID', 'TARGX', 'TARGY', 'TARGSRVY', 'TARGNAME',
+                             'TARGRA', 'TARGDEC', 'TARGEPOCH', 'TARGCAT',
+                             'TARGPROG', 'TARGCLASS',]
+            # Optional metadata, will check matching FIRST/LAST/NUM keys in fibermap:
+            special_fm_keys = ['FIBREID']
+            # Mandatory keys if zcatalog is set:
+            self.zcat_keys = ['Z', 'SPECTYPE', 'SUBTYPE', 'ZERR', 'ZWARN', 'DELTACHI2']
+            # Mandatory metadata:
+            self.phot_bands = ['G','R','I']
+            supported_masks = ['TARGPROG']
+
         else:
             raise ValueError('Wrong survey')
 
@@ -334,11 +350,16 @@ class ViewerCDS(object):
         elif survey == 'SDSS':
             #- Set 'TARGETID' name to OBJID for convenience
             self.cds_metadata.add([str(x.tolist()) for x in spectra.meta['plugmap']['OBJID']], name='TARGETID')
+        elif survey == 'WEAVE':
+            #- Set 'TARGETID' name to TARGID for convenience
+            self.cds_metadata.add([str(x) for x in spectra.fibermap['TARGID']], name='TARGETID')
 
         #- Photometry
         for i, bandname in enumerate(self.phot_bands) :
             if survey == 'SDSS':
                 mag = spectra.meta['plugmap']['MAG'][:, i]
+            elif survey == 'WEAVE':
+                mag = np.array(spectra.fibermap['MAG_'+bandname])
             else :
                 mag = np.zeros(nspec)
                 flux = spectra.fibermap['FLUX_'+bandname]
@@ -368,12 +389,14 @@ class ViewerCDS(object):
             elif survey == 'SDSS':
                 assert mask_type in supported_masks
                 target_info = [ mask_type + ' (DUMMY)' for x in spectra.meta['plugmap'] ] # placeholder
+            elif survey == 'WEAVE':
+                target_info = spectra.fibermap[mask_type]
             self.cds_metadata.add(target_info, name='Targeting masks')
 
         #- Software versions
         #- TODO : get template version (from zcatalog...)
-        if survey == 'SDSS':
-            spec_version = 'SDSS'
+        if survey in ['SDSS', 'WEAVE']:
+            spec_version = survey
         else :
             spec_version = '0'
             for xx,yy in spectra.meta.items() :
@@ -435,7 +458,3 @@ class ViewerCDS(object):
             line_data['major'].extend(line_array['major'])
 
         self.cds_spectral_lines = ColumnDataSource(line_data)
-
-
-
-

@@ -93,7 +93,7 @@ def create_model(spectra, zcat, archetype_fit=False, archetypes_dir=None, templa
         if archetype_fit:
             archetype  = archetypes[zb['SPECTYPE']]
             coeff      = zb['COEFF']
-            
+
             for band in spectra.bands:
                 wave                = spectra.wave[band]
                 wavehash            = hash((len(wave), wave[0], wave[1], wave[-2], wave[-1], spectra.R[band].data.shape[0]))
@@ -148,7 +148,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
                 with_coaddcam=True, mask_type='DESI_TARGET',
                 model_from_zcat=True, model=None, num_approx_fits=None, with_full_2ndfit=True,
                 template_dir=None, archetype_fit=False, archetypes_dir=None,
-                std_template_file=None):
+                std_template_file=None, survey=None):
     '''Main prospect routine. From a set of spectra, creates a bokeh document
     used for VI, to be displayed as an HTML page or within a Jupyter notebook.
 
@@ -211,26 +211,31 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         Directory path for archetypes if not :envvar:`RR_ARCHETYPE_DIR`.
     std_template_file : :class:`str`, optional
         File containing standard templates to display in viewer.
+    survey : :clas:`str`, optional
+        Overwrite the assumed survey
     '''
 
     #- Check input spectra.
     #- Set masked bins to NaN for compatibility with bokeh.
     if _specutils_imported and isinstance(spectra, Spectrum1D):
         # We will assume this is from an SDSS/BOSS/eBOSS spPlate file.
-        survey = 'SDSS'
+        if survey is None:
+            survey = 'SDSS'
         nspec = spectra.flux.shape[0]
         bad = (spectra.uncertainty.array == 0.0) | spectra.mask
         spectra.flux[bad] = np.nan
     elif _specutils_imported and isinstance(spectra, SpectrumList):
         # We will assume this is from a DESI spectra-64 file.
-        survey = 'DESI'
+        if survey is None:
+            survey = 'DESI'
         nspec = spectra[0].flux.shape[0]
         for s in spectra:
             bad = (s.uncertainty.array == 0.0) | s.mask
             s.flux[bad] = np.nan
     else:
         # DESI object (Spectra or list of Frame)
-        survey = 'DESI'
+        if survey is None:
+            survey = 'DESI'
         if _desispec_imported and isinstance(spectra, desispec.spectra.Spectra):
             nspec = spectra.num_spectra()
         elif _desispec_imported and isinstance(spectra, list) and isinstance(spectra[0], desispec.frame.Frame):
@@ -243,14 +248,14 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
                 )
         else:
             raise ValueError("Unsupported type for input spectra. \n"+
-                    "    _specutils_imported = "+str(_specutils_imported)+"\n"+ 
+                    "    _specutils_imported = "+str(_specutils_imported)+"\n"+
                     "    _desispec_imported = "+str(_desispec_imported))
         for band in spectra.bands:
             bad = (spectra.ivar[band] == 0.0) | (spectra.mask[band] != 0)
             spectra.flux[band][bad] = np.nan
         #- No coaddition if spectra is already single-band
         if len(spectra.bands)==1 : with_coaddcam = False
-    
+
     if title is None:
         title = "prospect"
 
@@ -259,6 +264,9 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         if survey == 'SDSS':
             if len(zcatalog) != spectra.flux.shape[0]:
                 raise ValueError('zcatalog and spectra do not match (different lengths)')
+        elif survey == 'WEAVE':
+            if np.any(zcatalog['TARGID'] != spectra.fibermap['TARGID']) :
+                raise ValueError('zcatalog and spectra do not match (different targids)')
         else:
             if np.any(zcatalog['TARGETID'] != spectra.fibermap['TARGETID']) :
                 raise ValueError('zcatalog and spectra do not match (different targetids)')
@@ -313,7 +321,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
             viewer_cds.init_model(model_2ndfit, second_fit=True)
 
     viewer_cds.load_metadata(spectra, mask_type=mask_type, zcatalog=zcatalog, survey=survey)
-    
+
     #-------------------------
     #-- Graphical objects --
     #-------------------------
@@ -321,7 +329,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     viewer_plots = ViewerPlots()
     viewer_plots.create_mainfig(spectra, title, viewer_cds, survey,
                                 with_noise=with_noise, with_coaddcam=with_coaddcam)
-    viewer_plots.create_zoomfig(viewer_cds, 
+    viewer_plots.create_zoomfig(viewer_cds,
                                 with_noise=with_noise, with_coaddcam=with_coaddcam)
     if with_imaging :
         viewer_plots.create_imfig(spectra)
@@ -332,7 +340,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     viewer_cds.load_spectral_lines(z)
     viewer_plots.add_spectral_lines(viewer_cds, figure='main')
     viewer_plots.add_spectral_lines(viewer_cds, figure='zoom', label_offset_top=50)
-    
+
 
     #-------------------------
     #-- Widgets and callbacks --
@@ -358,7 +366,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
                                        show_zcat=show_zcat)
     viewer_widgets.add_specline_toggles(viewer_cds, viewer_plots)
     viewer_widgets.add_model_select(viewer_cds, num_approx_fits, with_full_2ndfit=with_full_2ndfit)
-    
+
     #-----
     #- VI-related widgets
     ## TODO if with_vi_widgets (need to adapt update_plot.js..)
@@ -379,12 +387,12 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     if (vi_countdown > 0) :
         viewer_vi_widgets.add_countdown(vi_countdown)
 
-    viewer_widgets.add_update_plot_callback(viewer_cds, viewer_plots, 
+    viewer_widgets.add_update_plot_callback(viewer_cds, viewer_plots,
                 viewer_vi_widgets)
 
     #-----
     #- Bokeh layout and output
-    
+
     bokeh_layout = ViewerLayout(viewer_plots, viewer_widgets, viewer_vi_widgets,
                               with_vi_widgets=with_vi_widgets)
     if with_thumb_tab:

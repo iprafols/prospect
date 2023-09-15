@@ -48,12 +48,17 @@ def _viewer_urls(spectra, pixscale=0.262, zoom=13, layer='ls-dr9'):
     v = "https://www.legacysurvey.org/viewer/?ra={0:f}&dec={1:f}&zoom={2:d}&layer={3}&mark={0:f},{1:f}"
 
     if hasattr(spectra, 'fibermap'):
-        try:
+        if "RA_TARGET" in spectra.fibermap.columns:
             ra = spectra.fibermap['RA_TARGET']
             dec = spectra.fibermap['DEC_TARGET']
-        except KeyError:
+        elif "TARGET_RA" in spectra.fibermap.columns:
             ra = spectra.fibermap['TARGET_RA']
             dec = spectra.fibermap['TARGET_DEC']
+        elif "TARGRA" in spectra.fibermap.columns:
+            ra = spectra.fibermap['TARGRA']
+            dec = spectra.fibermap['TARGDEC']
+        else:
+            raise KeyError("could not find any of RA_TARGET, TARGET_RA, TARGRA")
     else:
         ra = spectra.meta['plugmap']['RA']
         dec = spectra.meta['plugmap']['DEC']
@@ -61,12 +66,22 @@ def _viewer_urls(spectra, pixscale=0.262, zoom=13, layer='ls-dr9'):
     #- Compute PM corrections
     default_ref_epoch = 2015.5  # PM correction is set to zero at that epoch
     if hasattr(spectra, 'fibermap'):
-        pmcor_ra = (default_ref_epoch-spectra.fibermap['REF_EPOCH'])*spectra.fibermap['PMRA']/1e3  # PM in mas/yr
-        pmcor_dec = (default_ref_epoch-spectra.fibermap['REF_EPOCH'])*spectra.fibermap['PMDEC']/1e3
-        # avoid adding a second cross-hair when PM correction is smaller than 1 arcsec (ie. in most cases):
-        mask = ((np.abs(pmcor_ra)<1) & (np.abs(pmcor_dec)<1)) | (spectra.fibermap['REF_EPOCH']==0)
-        pmcor_ra[mask] = 0
-        pmcor_dec[mask] = 0
+        if 'PMRA' in spectra.fibermap.columns:
+            pmcor_ra = (default_ref_epoch-spectra.fibermap['REF_EPOCH'])*spectra.fibermap['PMRA']/1e3  # PM in mas/yr
+            pmcor_dec = (default_ref_epoch-spectra.fibermap['REF_EPOCH'])*spectra.fibermap['PMDEC']/1e3
+            # avoid adding a second cross-hair when PM correction is smaller than 1 arcsec (ie. in most cases):
+            mask = ((np.abs(pmcor_ra)<1) & (np.abs(pmcor_dec)<1)) | (spectra.fibermap['REF_EPOCH']==0)
+            pmcor_ra[mask] = 0
+            pmcor_dec[mask] = 0
+        elif 'TARGPMRA' in spectra.fibermap.columns:
+            pmcor_ra = (default_ref_epoch-spectra.fibermap['TARGEPOCH'])*spectra.fibermap['TARGPMRA']  # PM in mas/yr
+            pmcor_dec = (default_ref_epoch-spectra.fibermap['TARGEPOCH'])*spectra.fibermap['TARGPMDEC']  # PM in mas/yr
+            # avoid adding a second cross-hair when PM correction is smaller than 1 arcsec (ie. in most cases):
+            mask = ((np.abs(pmcor_ra)<1) & (np.abs(pmcor_dec)<1)) | (spectra.fibermap['TARGEPOCH']==0)
+            pmcor_ra[mask] = 0
+            pmcor_dec[mask] = 0
+        else:
+            raise KeyError("could not find any of PMRA, TARGPMRA")
     else:
         pmcor_ra = spectra.meta['plugmap']['RA'] * 0.0
         pmcor_dec = spectra.meta['plugmap']['DEC'] * 0.0
