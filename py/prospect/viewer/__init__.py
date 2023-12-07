@@ -81,7 +81,7 @@ def create_model(spectra, zcat, archetype_fit=False, archetypes_dir=None, templa
         archetypes = All_archetypes(archetypes_dir=archetypes_dir).archetypes
     else:
         templates = load_redrock_templates(template_dir=template_dir)
-
+        
     #- Empty model flux arrays per band to fill
     model_flux = dict()
     for band in spectra.bands:
@@ -106,6 +106,11 @@ def create_model(spectra, zcat, archetype_fit=False, archetypes_dir=None, templa
                 subtype = zcat['SUBTYPE'].data.data[i].decode('utf-8')
             else:
                 subtype = zb['SUBTYPE']
+            if zb['SPECTYPE'] == "QSO" and subtype == "":
+                if zb['Z'] > 1.3:
+                    subtype = "HIZ"
+                else:
+                    subtype = "LOZ"
             tx    = templates[(zb['SPECTYPE'], subtype)]
             coeff = zb['COEFF'][0:tx.nbasis]
             model = tx.flux.T.dot(coeff).T
