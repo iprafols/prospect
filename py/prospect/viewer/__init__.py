@@ -16,23 +16,10 @@ Spectra can be:
 
 """
 
-import os, sys
-from pkg_resources import resource_filename
-
+import os
 import numpy as np
 from numpy.ma.core import MaskedConstant
-import scipy.ndimage.filters
-
-from astropy.table import Table
-import astropy.io.fits
-
 import bokeh.plotting as bk
-from bokeh.models import ColumnDataSource, CDSView, IndexFilter
-from bokeh.models import CustomJS, LabelSet, Label, Span, Legend, Panel, Tabs, BoxAnnotation
-from bokeh.models.widgets import (
-    Slider, Button, Div, CheckboxGroup, CheckboxButtonGroup, RadioButtonGroup,
-    TextInput, Select, DataTable, TableColumn, Toggle)
-import bokeh.layouts as bl
 
 _specutils_imported = True
 try:
@@ -77,11 +64,17 @@ def create_model(spectra, zcat, archetype_fit=False, archetypes_dir=None, templa
     if np.any(zcat['TARGETID'] != spectra.fibermap['TARGETID']) :
         raise ValueError('zcatalog and spectra do not match (different targetids)')
 
+    #- Get template versions from header if possible
+    if hasattr(zcat, 'meta') and ('TEMNAM00' in zcat.meta):
+        zcat_header = zcat.meta
+    else:
+        zcat_header = None
+
     if archetype_fit:
         archetypes = All_archetypes(archetypes_dir=archetypes_dir).archetypes
     else:
-        templates = load_redrock_templates(template_dir=template_dir)
-        
+        templates = load_redrock_templates(template_dir=template_dir, zcat_header=zcat_header)
+
     #- Empty model flux arrays per band to fill
     model_flux = dict()
     for band in spectra.bands:
@@ -119,41 +112,40 @@ def create_model(spectra, zcat, archetype_fit=False, archetypes_dir=None, templa
                 mx                  = resample_flux(spectra.wave[band], tx.wave*(1+zb['Z']), model)
                 model_flux[band][i] = spectra.R[band][i].dot(mx)
 
-    #- Now combine, if needed, to a single wavelength grid across all cameras
-    if spectra.bands == ['brz'] :
-        model_wave = spectra.wave['brz']
-        mflux = model_flux['brz']
-
-    elif np.all([ band in spectra.bands for band in ['b','r','z'] ]) :
-        br_split = 0.5*(spectra.wave['b'][-1] + spectra.wave['r'][0])
-        rz_split = 0.5*(spectra.wave['r'][-1] + spectra.wave['z'][0])
-        keep = dict()
-        keep['b'] = (spectra.wave['b'] < br_split)
-        keep['r'] = (br_split <= spectra.wave['r']) & (spectra.wave['r'] < rz_split)
-        keep['z'] = (rz_split <= spectra.wave['z'])
-        model_wave = np.concatenate( [
-            spectra.wave['b'][keep['b']],
-            spectra.wave['r'][keep['r']],
-            spectra.wave['z'][keep['z']],
-        ] )
-        mflux = np.concatenate( [
-            model_flux['b'][:, keep['b']],
-            model_flux['r'][:, keep['r']],
-            model_flux['z'][:, keep['z']],
-        ], axis=1 )
-    else :
-        raise RuntimeError("create_model: Set of bands for spectra not supported")
+    #- Combine, if needed, to a single wavelength grid across all cameras
+    # The following works for any given set of bands
+    keep = dict()
+    meanwaves = [ np.mean(spectra.wave[band]) for band in spectra.bands]  # sort bands by increasing wave
+    sorted_bands = [ x for _,x in sorted(zip(meanwaves, spectra.bands)) ]
+    for i_band, band in enumerate(sorted_bands):
+        wavecut_low = 0
+        wavecut_up = 1.e10
+        if i_band>0:
+            band_low = sorted_bands[i_band-1]
+            wavecut_low = 0.5*(spectra.wave[band_low][-1] + spectra.wave[band][0])
+        if i_band<len(sorted_bands)-1:
+            band_up = sorted_bands[i_band+1]
+            wavecut_up = 0.5*(spectra.wave[band][-1] + spectra.wave[band_up][0])
+        keep[band] = (spectra.wave[band]>wavecut_low) & (spectra.wave[band]<wavecut_up)
+    model_wave = np.concatenate(
+        [ spectra.wave[band][keep[band]] for band in sorted_bands ]
+    )
+    mflux = np.concatenate(
+        [ model_flux[band][:, keep[band]] for band in sorted_bands ],
+    axis=1)
 
     return model_wave, mflux
 
 
-def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_dir=None, title=None,
-                with_imaging=True, with_noise=True, with_thumb_tab=True, with_vi_widgets=True,
+def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False,
+                html_dir=None, outfile=None, title=None,
+                colors=None, with_imaging=True, with_noise=True, with_thumb_tab=True, with_vi_widgets=True,
                 top_metadata=None, vi_countdown=-1, with_thumb_only_page=False,
                 with_coaddcam=True, mask_type='DESI_TARGET',
-                model_from_zcat=True, model=None, num_approx_fits=None, with_full_2ndfit=True,
+                model_from_zcat=True, model=None, with_other_model=True,
+                num_approx_fits=None, with_full_2ndfit=True,
                 template_dir=None, archetype_fit=False, archetypes_dir=None,
-                std_template_file=None, survey=None):
+                std_template_file=None, zmax_slider=5.0):
     '''Main prospect routine. From a set of spectra, creates a bokeh document
     used for VI, to be displayed as an HTML page or within a Jupyter notebook.
 
@@ -171,8 +163,13 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         If ``True``, bokeh outputs the viewer to a Jupyter notebook.
     html_dir : :class:`str`, optional
         Directory to store the HTML page if `notebook` is ``False``.
+    outfile : :class:`str`, optional
+        Output filename to write, including path
     title : :class:`str`, optional
         Title used to name the HTML page / the bokeh figure / the VI file.
+    colors : :class:`list`, optional
+        Customize the curve's colors: 3 colors should be given, associated respectively to
+        the coadded data, the model and the noise.
     with_imaging : :class:`bool`, optional
         If ``False``, don't include thumb image from https://www.legacysurvey.org/viewer.
     with_noise : :class:`bool`, optional
@@ -216,8 +213,8 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         Directory path for archetypes if not :envvar:`RR_ARCHETYPE_DIR`.
     std_template_file : :class:`str`, optional
         File containing standard templates to display in viewer.
-    survey : :clas:`str`, optional
-        Overwrite the assumed survey
+    zmax_slider : :class:`float`, optional
+        Maximum range of the redshift slider widget.
     '''
 
     #- Check input spectra.
@@ -227,14 +224,17 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         if survey is None:
             survey = 'SDSS'
         nspec = spectra.flux.shape[0]
-        bad = (spectra.uncertainty.array == 0.0) | spectra.mask
+        # Historically, SDSS ignored any mask when marking bad pixels in plots.
+        bad = (spectra.uncertainty.array == 0.0)
         spectra.flux[bad] = np.nan
     elif _specutils_imported and isinstance(spectra, SpectrumList):
-        # We will assume this is from a DESI spectra-64 file.
+        # We will assume this is from a DESI spectra or coadd file.
         if survey is None:
             survey = 'DESI'
         nspec = spectra[0].flux.shape[0]
         for s in spectra:
+            # For DESI, anything that has a non-zero mask should also already
+            # have ivar == 0, so this may be redundant, but should also be harmless.
             bad = (s.uncertainty.array == 0.0) | s.mask
             s.flux[bad] = np.nan
     else:
@@ -256,6 +256,8 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
                     "    _specutils_imported = "+str(_specutils_imported)+"\n"+
                     "    _desispec_imported = "+str(_desispec_imported))
         for band in spectra.bands:
+            # For DESI, anything that has a non-zero mask should also already
+            # have ivar == 0, so this may be redundant, but should also be harmless.
             bad = (spectra.ivar[band] == 0.0) | (spectra.mask[band] != 0)
             spectra.flux[band][bad] = np.nan
         #- No coaddition if spectra is already single-band
@@ -299,9 +301,11 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         viewer_cds.init_coaddcam_spec(spectra, with_noise)
     if model is not None:
         viewer_cds.init_model(model)
-        if zcatalog is not None:
+        if zcatalog is not None and with_other_model:
             viewer_cds.init_othermodel(zcatalog)
-    viewer_cds.load_std_templates(std_template_file=std_template_file)
+
+    if with_other_model:
+        viewer_cds.load_std_templates(std_template_file=std_template_file)
 
     if redrock_cat is not None :
         if np.any(redrock_cat['TARGETID'] != spectra.fibermap['TARGETID']) :
@@ -309,9 +313,15 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         if zcatalog is None :
             raise ValueError('Redrock_cat was provided but not zcatalog.')
 
+        #- Get template versions from header if possible
+        if hasattr(redrock_cat, 'meta') and ('TEMNAM00' in redrock_cat.meta):
+            zcat_header = redrock_cat.meta
+        else:
+            zcat_header = None
+
         if num_approx_fits!=0 :
             # TODO un-hardcode nbpts_templates ?
-            viewer_cds.load_fit_templates(template_dir=template_dir, nbpts_templates=4000)
+            viewer_cds.load_fit_templates(template_dir=template_dir, nbpts_templates=4000, zcat_header=zcat_header)
         viewer_cds.load_rrdetails(redrock_cat)
         #- define num_approx_fits, used in the "model_select" widget:
         nfits_redrock_cat = viewer_cds.dict_rrdetails['Nfit']
@@ -331,7 +341,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     #-- Graphical objects --
     #-------------------------
 
-    viewer_plots = ViewerPlots()
+    viewer_plots = ViewerPlots(colors=colors)
     viewer_plots.create_mainfig(spectra, title, viewer_cds, survey,
                                 with_noise=with_noise, with_coaddcam=with_coaddcam)
     viewer_plots.create_zoomfig(viewer_cds,
@@ -355,7 +365,7 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     viewer_widgets.add_navigation(nspec)
     viewer_widgets.add_resetrange(viewer_cds, viewer_plots)
 
-    viewer_widgets.add_redshift_widgets(z, viewer_cds, viewer_plots)
+    viewer_widgets.add_redshift_widgets(z, viewer_cds, viewer_plots, zmax_slider)
     viewer_widgets.add_oii_widgets(viewer_plots)
 
     viewer_plots.add_imfig_callback(viewer_widgets)
@@ -370,7 +380,8 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
     viewer_widgets.add_metadata_tables(viewer_cds, top_metadata=top_metadata,
                                        show_zcat=show_zcat)
     viewer_widgets.add_specline_toggles(viewer_cds, viewer_plots)
-    viewer_widgets.add_model_select(viewer_cds, num_approx_fits, with_full_2ndfit=with_full_2ndfit)
+    if with_other_model:
+        viewer_widgets.add_model_select(viewer_cds, num_approx_fits)
 
     #-----
     #- VI-related widgets
@@ -407,9 +418,13 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         bk.output_notebook()
         bk.show(bokeh_layout.full_viewer)
     else:
-        if html_dir is None : raise RuntimeError("Need html_dir")
-        html_page = os.path.join(html_dir, title+".html")
-        bk.output_file(html_page, title='DESI spectral viewer')
+        if html_dir is None and outfile is None:
+            raise RuntimeError("Need html_dir or outfile")
+
+        if outfile is None:
+            outfile = os.path.join(html_dir, title+".html")
+
+        bk.output_file(outfile, title='DESI spectral viewer')
         bk.save(bokeh_layout.full_viewer)
 
     #-----
@@ -420,3 +435,5 @@ def plotspectra(spectra, zcatalog=None, redrock_cat=None, notebook=False, html_d
         bk.output_file(thumb_page, title='DESI spectral viewer - thumbnail gallery')
         thumb_grid = StandaloneThumbLayout(spectra, viewer_plots, title)
         bk.save(thumb_grid.thumb_viewer)
+
+    return

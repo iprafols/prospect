@@ -54,8 +54,9 @@ def _metadata_table(table_keys, viewer_cds, table_width=500, shortcds_name='shor
     # In order to be able to copy-paste the metadata in browser,
     #   the combination selectable=True, editable=True is needed:
     editable = True if selectable else False
-    output_table = DataTable(source = shortcds, columns=table_columns,
-                             index_position=None, selectable=selectable, editable=editable, width=table_width)
+    output_table = DataTable(source=shortcds, columns=table_columns,
+                             index_position=None, selectable=selectable,
+                             editable=editable, width=table_width)
     output_table.height = 2 * output_table.row_height
     return (shortcds, output_table)
 
@@ -77,7 +78,8 @@ class ViewerWidgets(object):
         # Ispectrumslider's value controls which spectrum is displayed
         # These two widgets call update_plot(), later defined
         slider_end = nspec-1 if nspec > 1 else 0.5 # Slider cannot have start=end
-        self.ispectrumslider = Slider(start=0, end=slider_end, value=0, step=1, title='Spectrum (0 to '+str(nspec-1)+')')
+        slidertitle = 'Spectrum number (0 to '+str(nspec-1)+')'
+        self.ispectrumslider = Slider(start=0, end=slider_end, value=0, step=1, title=slidertitle)
         self.smootherslider = Slider(start=0, end=26, value=0, step=1.0, title='Gaussian Sigma Smooth')
         self.coaddcam_buttons = None
         self.model_select = None
@@ -102,14 +104,28 @@ class ViewerWidgets(object):
             }
             """)
         self.next_callback = CustomJS(
-            args=dict(ispectrumslider=self.ispectrumslider, nspec=nspec),
-            code="""
+            args = dict(ispectrumslider=self.ispectrumslider, nspec=nspec),
+            code = """
             if(ispectrumslider.value<nspec-1 && ispectrumslider.end>=1) {
                 ispectrumslider.value++
             }
             """)
         self.prev_button.js_on_event('button_click', self.prev_callback)
         self.next_button.js_on_event('button_click', self.next_callback)
+        #- Input spectrum number
+        self.ispec_input = TextInput(value=str(self.ispectrumslider.value), width=50)
+        self.ispec_input_callback = CustomJS(
+            args = dict(ispec_input=self.ispec_input, ispectrumslider=self.ispectrumslider, nspec=nspec),
+            code = """
+            var i_spec = parseInt(ispec_input.value) ;
+            if (Number.isInteger(i_spec) && i_spec>=0 && i_spec<nspec) {
+                // Avoid recursive call
+                if (i_spec != ispectrumslider.value) {
+                    ispectrumslider.value = i_spec ;
+                }
+            }
+            """)
+        self.ispec_input.js_on_change('value', self.ispec_input_callback)
 
     def add_resetrange(self, viewer_cds, plots):
         #-----
@@ -125,20 +141,19 @@ class ViewerWidgets(object):
             code = reset_plotrange_code)
         self.reset_plotrange_button.js_on_event('button_click', self.reset_plotrange_callback)
 
-    def add_redshift_widgets(self, z, viewer_cds, plots):
+    def add_redshift_widgets(self, z, viewer_cds, plots, zmax_slider):
         ## TODO handle "z" (same issue as viewerplots TBD)
 
         #-----
         #- Redshift / wavelength scale widgets
         z1 = np.floor(z*100)/100
         dz = z-z1
-        self.zslider = Slider(start=-0.1, end=5.0, value=z1, step=0.01, title='Redshift rough tuning')
+        self.zslider = Slider(start=-0.1, end=round(zmax_slider, 2), value=z1, step=0.01, title='Redshift rough tuning')
         self.dzslider = Slider(start=0.0, end=0.0099, value=dz, step=0.0001, title='Redshift fine-tuning')
         self.zslider.format = "0[.]00" # default bokeh value, for record
         self.dzslider.format = "0[.]0000"
         self.z_input = TextInput(value="{:.4f}".format(z), title="Redshift value:")
         self.cds_widgetinfos.data['z_input_value'][0] = self.z_input.value
-
         #- Observer vs. Rest frame wavelengths
         self.waveframe_buttons = RadioButtonGroup(
             labels=["Obs", "Rest"], active=0)
@@ -150,7 +165,7 @@ class ViewerWidgets(object):
             //   2) out-of-range zslider values (should never happen in principle)
             var z1 = Math.floor(parseFloat(z_input.value)*100) / 100
             if ( (Math.abs(zslider.value-z1) >= 0.01) &&
-                 (zslider.value >= -0.1) && (zslider.value <= 5.0) ){
+                 (zslider.value >= zslider.start) && (zslider.value <= zslider.end) ){
                  var new_z = zslider.value + dzslider.value
                  z_input.value = new_z.toFixed(4)
                 }
@@ -175,19 +190,19 @@ class ViewerWidgets(object):
         self.z_minus_button = Button(label="<", width=self.z_button_width)
         self.z_plus_button = Button(label=">", width=self.z_button_width)
         self.z_minus_callback = CustomJS(
-            args=dict(z_input=self.z_input),
+            args=dict(z_input=self.z_input, zslider=self.zslider),
             code="""
             var z = parseFloat(z_input.value)
-            if(z >= -0.09) {
+            if(z >= zslider.start + 0.01) {
                 z -= 0.01
                 z_input.value = z.toFixed(4)
             }
             """)
         self.z_plus_callback = CustomJS(
-            args=dict(z_input=self.z_input),
+            args=dict(z_input=self.z_input, zslider=self.zslider),
             code="""
             var z = parseFloat(z_input.value)
-            if(z <= 4.99) {
+            if(z <= zslider.end - 0.01) {
                 z += 0.01
                 z_input.value = z.toFixed(4)
             }
@@ -235,7 +250,11 @@ class ViewerWidgets(object):
         self.waveframe_callback = CustomJS(
             args = waveframe_args,
             code = self.js_files["shift_wave.js"] + self.js_files["change_waveframe.js"])
-        self.waveframe_buttons.js_on_click(self.waveframe_callback)
+        try:
+            self.waveframe_buttons.js_on_click(self.waveframe_callback)
+        except AttributeError:
+            # Bokeh 3
+            self.waveframe_buttons.js_on_change('active', self.waveframe_callback)
 
     def add_oii_widgets(self, plots):
         #------
@@ -303,7 +322,11 @@ class ViewerWidgets(object):
             }
             """
         )
-        self.coaddcam_buttons.js_on_click(self.coaddcam_callback)
+        try:
+            self.coaddcam_buttons.js_on_click(self.coaddcam_callback)
+        except AttributeError:
+            # Bokeh 3
+            self.coaddcam_buttons.js_on_event('button_click', self.coaddcam_callback)
 
 
     def add_metadata_tables(self, viewer_cds, show_zcat=True,
@@ -401,48 +424,53 @@ class ViewerWidgets(object):
                         lines_button_group = self.speclines_button_group,
                         majorline_checkbox = self.majorline_checkbox),
             code="""
-            var show_emission = false
-            var show_absorption = false
-            if (lines_button_group.active.indexOf(0) >= 0) {  // index 0=Emission in active list
-                show_emission = true
-            }
-            if (lines_button_group.active.indexOf(1) >= 0) {  // index 1=Absorption in active list
-                show_absorption = true
-            }
-
-            for(var i=0; i<lines.length; i++) {
-                if ( !(line_data.data['major'][i]) && (majorline_checkbox.active.indexOf(0)>=0) ) {
-                    lines[i].visible = false
-                    line_labels[i].visible = false
-                    zlines[i].visible = false
-                    zline_labels[i].visible = false
+            // console.log("lines_button_group.active == " + lines_button_group.active);
+            // console.log("lines_button_group.active == " + lines_button_group.active);
+            // console.log("majorline_checkbox.active == " + majorline_checkbox.active);
+            var show_emission = (lines_button_group.active.indexOf(0) >= 0);
+            var show_absorption = (lines_button_group.active.indexOf(1) >= 0);
+            for (var i = 0; i < lines.length; i++) {
+                if ( !(line_data.data['major'][i]) && (majorline_checkbox.active.indexOf(0) >= 0) ) {
+                    lines[i].visible = false;
+                    line_labels[i].visible = false;
+                    zlines[i].visible = false;
+                    zline_labels[i].visible = false;
                 } else if (line_data.data['emission'][i]) {
-                    lines[i].visible = show_emission
-                    line_labels[i].visible = show_emission
-                    zlines[i].visible = show_emission
-                    zline_labels[i].visible = show_emission
+                    lines[i].visible = show_emission;
+                    line_labels[i].visible = show_emission;
+                    zlines[i].visible = show_emission;
+                    zline_labels[i].visible = show_emission;
                 } else {
-                    lines[i].visible = show_absorption
-                    line_labels[i].visible = show_absorption
-                    zlines[i].visible = show_absorption
-                    zline_labels[i].visible = show_absorption
+                    lines[i].visible = show_absorption;
+                    line_labels[i].visible = show_absorption;
+                    zlines[i].visible = show_absorption;
+                    zline_labels[i].visible = show_absorption;
                 }
             }
             """
         )
-        self.speclines_button_group.js_on_click(self.speclines_callback)
-        self.majorline_checkbox.js_on_click(self.speclines_callback)
+        try:
+            self.speclines_button_group.js_on_click(self.speclines_callback)
+        except AttributeError:
+            # Bokeh 3
+            self.speclines_button_group.js_on_change('active', self.speclines_callback)
+        try:
+            self.majorline_checkbox.js_on_click(self.speclines_callback)
+        except AttributeError:
+            # Bokeh 3
+            self.majorline_checkbox.js_on_change('active', self.speclines_callback)
 
 
-    def add_model_select(self, viewer_cds, num_approx_fits, with_full_2ndfit=True):
+    def add_model_select(self, viewer_cds, num_approx_fits):
         #------
         #- Select secondary model to display
         model_options = []
         if viewer_cds.cds_model is not None:
             model_options = ['Best fit']
-        if with_full_2ndfit:
+        if viewer_cds.cds_model_2ndfit is not None:
             model_options.append('2nd best fit')
-        if num_approx_fits is not None:
+        if num_approx_fits is not None and viewer_cds.dict_rrdetails is not None:
+            # NB approx fits are computed from coefs in detailled redrock file
             for i in range(1,1+num_approx_fits) :
                 ith = 'th'
                 if i==1 : ith='st'
@@ -495,6 +523,7 @@ class ViewerWidgets(object):
                 shortcds_table_c = self.shortcds_table_c,
                 shortcds_table_d = self.shortcds_table_d,
                 ispectrumslider = self.ispectrumslider,
+                ispec_input = self.ispec_input,
                 smootherslider = self.smootherslider,
                 z_input = self.z_input,
                 widgetinfos = self.cds_widgetinfos,

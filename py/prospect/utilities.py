@@ -8,13 +8,12 @@ prospect.utilities
 Utility functions for prospect.
 """
 
-import os, glob, sys
-from pkg_resources import resource_string, resource_listdir
+import os, sys
+import importlib.resources
 
 import numpy as np
 import astropy.io.fits
 from astropy.table import Table, vstack, hstack
-import scipy.ndimage.filters
 
 _desiutil_imported = True
 try:
@@ -159,9 +158,11 @@ def get_resources(filetype):
         raise ValueError("Unknown filetype '{0}' for get_resources()!".format(filetype))
     if _resource_cache[filetype] is None:
         _resource_cache[filetype] = dict()
-        for f in resource_listdir('prospect', filetype):
-            if not f.startswith("."):
-                _resource_cache[filetype][f] = resource_string('prospect', filetype + '/' + f).decode('utf-8')
+        for f in importlib.resources.files('prospect').joinpath(filetype).iterdir():
+            if not f.name.startswith('.'):
+                with open(f) as fp:
+                    _resource_cache[filetype][f.name] = fp.read()
+
     return _resource_cache[filetype]
 
 
@@ -189,18 +190,24 @@ def file_or_gz_exists(fname):
     return one_exists
 
 
-def load_redrock_templates(template_dir=None) :
+def load_redrock_templates(template_dir=None, zcat_header=None) :
     '''
     Load redrock templates; redirect stdout because redrock is chatty
+
+    Optional zcat_header is header from redrock output with TEMNAMnn/TEMVERnn
+    keywords indicating the template versions used at the time of the fit.
     '''
     assert _redrock_imported
     saved_stdout = sys.stdout
     sys.stdout = open('/dev/null', 'w')
     try:
-        templates = dict()
-        for filename in redrock.templates.find_templates(template_dir=template_dir):
-            tx = redrock.templates.Template(filename)
-            templates[(tx.template_type, tx.sub_type)] = tx
+        if zcat_header is not None:
+            #- Load the version of the templates that match the versions recorded in the header
+            templates = redrock.templates.load_templates_from_header(zcat_header, template_dir=template_dir, asdict=True)
+        else:
+            #- Load the default versions
+            templates = redrock.templates.load_templates(template_dir, asdict=True)
+
     except Exception as err:
         sys.stdout = saved_stdout
         raise(err)
@@ -331,15 +338,34 @@ def create_zcat_from_redrock_cat(redrock_cat, fit_num=0):
 
 
 def get_subset_label(subset, dirtree_type):
-    if dirtree_type=='cumulative':
-        label = 'thru'+subset
-    elif dirtree_type=='perexp':
-        label = 'exp'+subset
-    elif dirtree_type=='pernight':
+    """Determine the label to give `subset` depending on `dirtree_type`.
+
+    Parameters
+    ----------
+    subset : :class:`str`
+        A subset name.
+    dirtree_type : :class:`str`
+        The type of data, *e.g.* 'cumulative'.
+
+    Returns
+    -------
+    :class:`str`
+        The label for `subset`.
+
+    Raises
+    ------
+    ValueError
+        If `dirtree_type` is unknown.
+    """
+    if dirtree_type == 'cumulative':
+        label = 'thru' + subset
+    elif dirtree_type == 'perexp':
+        label = 'exp' + subset
+    elif dirtree_type == 'pernight':
         label = subset
-    elif dirtree_type=='exposures':
+    elif dirtree_type == 'exposures':
         label = subset
-    elif dirtree_type=='healpix':
+    elif dirtree_type == 'healpix':
         label = subset
     else:
         raise ValueError("Unrecognized value for dirtree_type.")
@@ -400,7 +426,7 @@ def create_subsetdb(datadir, dirtree_type=None, spectra_type='coadd', tiles=None
        - Extensions can be fits or fits.gz
     """
 
-    if ( (nights is not None and dirtree_type!='pernight' and dirtree_type!='exposures')
+    if ( (nights is not None and dirtree_type not in ['pernight', 'exposures', 'cumulative'])
         or (expids is not None and dirtree_type!='perexp' and dirtree_type!='exposures') ):
         raise ValueError('Nights/expids option is incompatible with dirtree_type.')
     if (pixels is not None or survey_program is not None) and dirtree_type!='healpix':

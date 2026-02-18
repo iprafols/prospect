@@ -15,6 +15,13 @@ var nsmooth = smootherslider.value;
 //
 if (cb_obj == ispectrumslider) {
     //
+    // Update ispec_input, avoiding recursive call
+    //
+    if (i_spectrum != parseInt(ispec_input.value)) {
+        ispec_input.value = String(i_spectrum);
+    }
+
+    //
     // Update metadata using "shortcds" objects.
     //
     var shortcds_list = [shortcds_table_a, shortcds_table_b, shortcds_table_c]
@@ -132,8 +139,8 @@ for (var i=0; i<spectra.length; i++) {
     var data = spectra[i].data;
     var origflux = data['origflux'+String(i_spectrum)];
     if (origflux.filter(isFinite).length == 0) {
-        alert("Spectrum " + (i+1) + " (of " + spectra.length + ") of object " + i_spectrum + " has no valid data!");
-        data["plotflux"] = (function(){ var foo = []; for (var j=0; j<origflux.length; j++) foo.push(1.0); return foo;})();
+        //alert("Spectrum " + (i+1) + " (of " + spectra.length + ") of object " + i_spectrum + " has no valid data!");
+        data["plotflux"] = new Array(origflux.length).fill(0.0);
         if ("plotnoise" in data) data["plotnoise"] = data["plotflux"].slice();
     } else {
         if ('plotnoise' in data) {
@@ -176,7 +183,7 @@ if (coaddcam_spec) {
     var wave_in = [];
     var flux_in = [];
     var noise_in = [];
-    for (var i=0; i<3; i++) {
+    for (var i=0; i<spectra.length; i++) {
         var data = spectra[i].data;
         wave_in.push(data['plotwave'].slice());
         flux_in.push(data['plotflux'].slice());
@@ -214,14 +221,17 @@ if (othermodel) {
         othermodel.change.emit();
     } else if (cb_obj == ispectrumslider) {
         // Trick to trigger execution of select_model.js
-        // Reset othermodel to best fit (if there is one). Smoothing is done in select_model.js
+        // Reset othermodel to best fit (if there is one; else dont change it). Smoothing is done in select_model.js
+        var previous_value = model_select.value;
         var trigger_value = model_select.options[0];
-        if (model_select.value == trigger_value) {
+        if (previous_value == trigger_value) {
             trigger_value = model_select.options[1];
         }
         model_select.value = trigger_value;
         if (model_select.options.includes('Best fit')) {
             model_select.value = 'Best fit';
+        } else {
+            model_select.value = previous_value;
         }
     }
 }

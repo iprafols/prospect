@@ -9,8 +9,15 @@ Full bokeh layouts for prospect
 
 """
 
+import bokeh
 import bokeh.layouts as bl
-from bokeh.models import CustomJS, Tabs, Panel
+from bokeh.models import CustomJS, Tabs
+try:
+    # Bokeh 3
+    from bokeh.models import TabPanel
+except ImportError:
+    # Bokeh 2
+    from bokeh.models import Panel as TabPanel
 from bokeh.models.widgets import Div
 import bokeh.events
 
@@ -29,13 +36,15 @@ class ViewerLayout(object):
         vi_widgets : :class:`ViewerVIWidgets`
         '''
 
-        #- Main 'navigator'
+        #- Main spectrum 'navigator'
         self.navigator = bl.row(
             bl.column(widgets.prev_button, width=widgets.navigation_button_width+15),
             bl.column(widgets.next_button, width=widgets.navigation_button_width+20),
-            bl.column(widgets.ispectrumslider, width=plots.plot_width+(plots.plot_height//2)-(60*len(vi_widgets.vi_quality_labels)+2*widgets.navigation_button_width+35))
+            bl.column(widgets.ispectrumslider, width=plots.plot_width+(plots.plot_height//2)-(60*len(vi_widgets.vi_quality_labels)+2*widgets.navigation_button_width+35+100)),
+            bl.column(widgets.ispec_input, width=100),
+            background='#ececf9'
         )
-        
+
         #- Redshift widgets
         redshift_set_a = bl.row(
             bl.column(widgets.z_minus_button, width=widgets.z_button_width+15),
@@ -70,9 +79,12 @@ class ViewerLayout(object):
 
         #- VI widgets
         if with_vi_widgets :
-            self.navigator.children.insert(1, bl.column(vi_widgets.vi_quality_input, width=60*len(vi_widgets.vi_quality_labels)) )
+            self.navigator.children.insert(1, bl.column(
+                vi_widgets.vi_quality_input,
+                width=60*len(vi_widgets.vi_quality_labels)
+            ) )
             if vi_widgets.vi_countdown_toggle is None :
-                vi_header_block = bl.column( Div(text="VI optional indications :"), width=300 )
+                vi_header_block = bl.column( Div(text="VI optional indications:"), width=300 )
             else :
                 vi_header_block = bl.row(
                     bl.column( Div(text="VI optional indications :"), width=300 ),
@@ -124,14 +136,14 @@ class ViewerLayout(object):
                                 bl.column(bl.Spacer(width=30)),
                                 bl.column(widgets.waveframe_buttons, width=120)
                               )
-        else :
+        else:
             waveframe_block = bl.column(widgets.waveframe_buttons, width=120)
         self.plot_widget_set.children.append(waveframe_block)
         if widgets.model_select is not None :
             self.plot_widget_set.children.insert(4, bl.column(widgets.model_select, width=200))
-        
+
         #- Assemble all widgets
-        if with_vi_widgets :
+        if with_vi_widgets:
             self.full_widget_set = bl.column(
                 bl.row(
                     self.vi_widget_set,
@@ -140,10 +152,33 @@ class ViewerLayout(object):
                 ),
                 bl.column(vi_widgets.vi_guideline_div, width=2*widgets.plot_widget_width)
             )
-        else : self.full_widget_set = self.plot_widget_set
+        else:
+            N = len(self.plot_widget_set.children) // 2
+            self.full_widget_set = bl.row(
+                bl.column(self.plot_widget_set.children[0:N]),
+                bl.column(self.plot_widget_set.children[N:])
+            )
+
+        # Let primary spectra plot expand to fit browser width,
+        # while fixing imaging thumbnail and zoom sizes.
+        # Note: container row/column/Tabs also need to have stretch_width to work.
+        plots.fig.sizing_mode = 'stretch_width'
+
+        # create top layout row of plots; set sizing mode depending upon bokeh version
+        row_of_plots = bl.row(
+            plots.fig,
+            bl.column(plots.imfig, plots.zoomfig,
+                      sizing_mode='fixed', width=200, height=400),
+            bl.Spacer(width=20),
+        )
+
+        if bokeh.__version__.startswith('2'):
+            pass # do not set row_of_plots.sizing_mode for bokeh 2.x
+        else:
+            row_of_plots.sizing_mode = 'stretch_width'
 
         self.main_bokehlayout = bl.column(
-            bl.row(plots.fig, bl.column(plots.imfig, plots.zoomfig), bl.Spacer(width=20)),
+            row_of_plots,
             bl.row(
                 bl.column(widgets.table_a, width=600), # plot_width - 200
                 bl.column(bl.Spacer(width=20)),
@@ -153,6 +188,7 @@ class ViewerLayout(object):
                 bl.column(widgets.oii_undo_button, width=50),
             ),
             self.navigator,
+            bl.column(bl.Spacer(height=10)),
             self.full_widget_set,
             sizing_mode='stretch_width'
         )
@@ -164,13 +200,13 @@ class ViewerLayout(object):
         self.ncols_grid = 5 # TODO un-hardcode
         self.miniplot_width = ( plots.plot_width + (plots.plot_height//2) ) // self.ncols_grid
 
-        self.full_viewer = Tabs()
+        self.full_viewer = Tabs(sizing_mode='stretch_width')
         titles = None # TODO define
         self.thumb_grid = grid_thumbs(spectra, self.miniplot_width,
                 x_range=(plots.xmin,plots.xmax),
                 ncols_grid=self.ncols_grid, titles=titles)
-        tab1 = Panel(child = self.main_bokehlayout, title='Main viewer')
-        tab2 = Panel(child = self.thumb_grid, title='Gallery')
+        tab1 = TabPanel(child = self.main_bokehlayout, title='Main viewer')
+        tab2 = TabPanel(child = self.thumb_grid, title='Gallery')
         self.full_viewer.tabs=[ tab1, tab2 ]
 
         # Dirty trick : callback functions on thumbs need to be defined AFTER the full_viewer is implemented
@@ -186,7 +222,7 @@ class ViewerLayout(object):
 
 class StandaloneThumbLayout(object):
     ## Standalone grid of simple thumbs (to make lightweight pages showing all spectra)
-    
+
     def __init__(self, spectra, plots, title):
         self.ncols_grid = 5 # TODO un-hardcode
         titles = None # TODO define

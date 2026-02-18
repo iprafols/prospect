@@ -8,13 +8,11 @@ prospect.viewer.cds
 Class containing all bokeh's ColumnDataSource objects needed in viewer.py
 
 """
-
+import importlib.resources
 import numpy as np
-from pkg_resources import resource_filename
 from astropy.io import fits
 from astropy.table import Table
 
-import bokeh.plotting as bk
 from bokeh.models import ColumnDataSource
 
 _specutils_imported = True
@@ -47,13 +45,38 @@ def _airtovac(w):
         Wavelength [Å] of the line in vacuum.
     """
     if w < 2000.0:
-        return w;
+        return w
     vac = w
     for iter in range(2):
         sigma2 = (1.0e4/vac)*(1.0e4/vac)
         fact = 1.0 + 5.792105e-2/(238.0185 - sigma2) + 1.67917e-3/(57.362 - sigma2)
         vac = w*fact
     return vac
+
+
+def _ColumnToArray(column, convert_bytes=True):
+    """Converts an astropy table Column to an array which
+    can be safely used in a bokeh ColumnDataSource.
+
+    Parameters
+    ----------
+    column : :class:`astropy.table.Column`
+        an astropy Column to be converted.
+
+    convert_bytes : :class:`bool`
+        if True, convert byte strings to Unicode strings
+        (useful since bytes is not JSON serializable).
+
+    Returns
+    -------
+    :class:`numpy.array`
+        Converted columm.
+    """
+    out = column.data
+    if convert_bytes:
+        if out.dtype.kind == 'S':
+            out = out.astype('U')
+    return out
 
 
 class ViewerCDS(object):
@@ -140,9 +163,9 @@ class ViewerCDS(object):
                 flux_array = np.concatenate( tuple([s[j].flux[i, :].value for j, band in enumerate(bands)]) )
             w, = np.where( ~np.isnan(flux_array) )
             if len(w)==0 :
-                cdsdata['median'].append(1)
+                cdsdata['median'].append(1.0)
             else :
-                cdsdata['median'].append(np.median(flux_array[w]))
+                cdsdata['median'].append(np.median(flux_array[w]).tolist())
 
         self.cds_median_spectra = ColumnDataSource(cdsdata)
 
@@ -194,16 +217,18 @@ class ViewerCDS(object):
         })
 
 
-    def load_fit_templates(self, template_dir=None, nbpts_templates=4000):
+    def load_fit_templates(self, template_dir=None, nbpts_templates=4000, zcat_header=None):
         """ Create dict for spectral templates used in Redrock fits.
             These are used to recompute Redrock's Nth best-fit spectra on-the-fly
             in javascript.
             Templates are resampled in order to limit the size of html pages (and the
             browser's CPU usage).
             This resampling is dictated by parameter nbpts_templates.
+            zcat_header is header from Redrock output with TEMNAMnn/TEMVERnn keywords
+            indicating the version of the templates used at the time of the fit.
         """
         assert _desispec_imported # for resample_flux
-        rr_templts = load_redrock_templates(template_dir=template_dir)
+        rr_templts = load_redrock_templates(template_dir=template_dir, zcat_header=zcat_header)
         self.dict_fit_templates = dict()
         for key,templt in rr_templts.items():
             fulltype_key = "_".join(key)   # merge redrock's (TYPE, SUBTYPE)
@@ -222,7 +247,7 @@ class ViewerCDS(object):
         """
         self.dict_std_templates = dict()
         if std_template_file is None:
-            std_template_file = resource_filename('prospect', "data/std_templates.fits")
+            std_template_file = importlib.resources.files('prospect').joinpath("data", "std_templates.fits")
         hdul = fits.open(std_template_file)
         nhdu = len(hdul)
         hdul.close()
@@ -328,13 +353,12 @@ class ViewerCDS(object):
                 if all([ (x+fm_key in spectra.fibermap.keys()) for x in ['FIRST_','LAST_','NUM_'] ]):
                     if np.any(spectra.fibermap['NUM_'+fm_key] > 1) : # if NUM==1, use fm_key only
                         use_first_last_num = True
-                        self.cds_metadata.add(spectra.fibermap['FIRST_'+fm_key], name='FIRST_'+fm_key)
-                        self.cds_metadata.add(spectra.fibermap['LAST_'+fm_key], name='LAST_'+fm_key)
-                        self.cds_metadata.add(spectra.fibermap['NUM_'+fm_key], name='NUM_'+fm_key)
+                        for x in ['FIRST_','LAST_','NUM_']:
+                            self.cds_metadata.add(_ColumnToArray(spectra.fibermap[x+fm_key]), name=x+fm_key)
                 if (not use_first_last_num) and fm_key in spectra.fibermap.keys():
                     # Do not load placeholder metadata:
                     if not (np.all(spectra.fibermap[fm_key]==0) or np.all(spectra.fibermap[fm_key]==-1)):
-                        self.cds_metadata.add(spectra.fibermap[fm_key], name=fm_key)
+                        self.cds_metadata.add(_ColumnToArray(spectra.fibermap[fm_key]), name=fm_key)
             #- "Normal" keys
             for fm_key in fibermap_keys:
                 # Arbitrary choice:
@@ -346,7 +370,7 @@ class ViewerCDS(object):
                     continue
                 if fm_key in spectra.fibermap.keys():
                     if not (np.all(spectra.fibermap[fm_key]==0) or np.all(spectra.fibermap[fm_key]==-1)):
-                        self.cds_metadata.add(spectra.fibermap[fm_key], name=fm_key)
+                        self.cds_metadata.add(_ColumnToArray(spectra.fibermap[fm_key]), name=fm_key)
         elif survey == 'SDSS':
             #- Set 'TARGETID' name to OBJID for convenience
             self.cds_metadata.add([str(x.tolist()) for x in spectra.meta['plugmap']['OBJID']], name='TARGETID')
@@ -378,7 +402,12 @@ class ViewerCDS(object):
             self.cds_metadata.add(mag, name='mag_'+bandname)
 
         #- Targeting masks
-        if mask_type is not None:
+        if mask_type is None:
+            if survey == 'DESI':
+                target_info = ['DESI_TARGET (DUMMY)'] * len(spectra.fibermap)
+            elif survey == 'SDSS':
+                target_info = ['PRIMTARGET (DUMMY)'] * len(spectra.meta['plugmap'])
+        else:
             if survey == 'DESI':
                 if mask_type not in spectra.fibermap.keys():
                     mask_candidates = [x for x in spectra.fibermap.keys() if '_TARGET' in x]
@@ -391,7 +420,7 @@ class ViewerCDS(object):
                 target_info = [ mask_type + ' (DUMMY)' for x in spectra.meta['plugmap'] ] # placeholder
             elif survey == 'WEAVE':
                 target_info = spectra.fibermap[mask_type]
-            self.cds_metadata.add(target_info, name='Targeting masks')
+        self.cds_metadata.add(target_info, name='Targeting masks')
 
         #- Software versions
         #- TODO : get template version (from zcatalog...)
@@ -411,50 +440,39 @@ class ViewerCDS(object):
         #- Redshift fit
         if zcatalog is not None:
             for zcat_key in self.zcat_keys:
-                if 'TYPE' in zcat_key or 'CLASS' in zcat_key:
-                    data = zcatalog[zcat_key].astype('U{0:d}'.format(zcatalog[zcat_key].dtype.itemsize))
-                else :
-                    data = zcatalog[zcat_key]
-                self.cds_metadata.add(data, name=zcat_key)
+                self.cds_metadata.add(_ColumnToArray(zcatalog[zcat_key]), name=zcat_key)
 
         #- VI informations
         default_vi_info = [ (x[1],x[3]) for x in vi_file_fields if x[0][0:3]=="VI_" ]
         for vi_key, vi_value in default_vi_info:
             self.cds_metadata.add([vi_value for i in range(nspec)], name=vi_key)
 
-
     def load_spectral_lines(self, z=0):
+        """Load known emission and absorption line data from files.
 
-        line_data = dict(
-            restwave = [],
-            plotwave = [],
-            name = [],
-            longname = [],
-            plotname = [],
-            emission = [],
-            major = [],
-            #y = []
-        )
+        Parameters
+        ----------
+        z : array-like
+            Redshift(s) to shift to rest frame.
+        """
+        line_data = dict(restwave=[], plotwave=[], name=[], longname=[],
+                         plotname=[], emission=[], major=[])  #, y=[])
         for line_category in ('emission', 'absorption'):
             # encoding=utf-8 is needed to read greek letters
-            line_array = np.genfromtxt(resource_filename('prospect', "data/{0}_lines.txt".format(line_category)),
-                                       delimiter=",",
-                                       dtype=[("name", "|U20"),
-                                              ("longname", "|U20"),
-                                              ("wavelength", float),
-                                              ("vacuum", bool),
-                                              ("major", bool)],
-                                        encoding='utf-8')
-            vacuum_wavelengths = line_array['wavelength']
-            w, = np.where(line_array['vacuum']==False)
-            vacuum_wavelengths[w] = np.array([_airtovac(wave) for wave in line_array['wavelength'][w]])
-            line_data['restwave'].extend(vacuum_wavelengths)
-            line_data['plotwave'].extend(vacuum_wavelengths * (1+z))
-            line_data['name'].extend(line_array['name'])
-            line_data['longname'].extend(line_array['longname'])
-            line_data['plotname'].extend(line_array['name'])
-            emission_flag = True if line_category=='emission' else False
-            line_data['emission'].extend([emission_flag for row in line_array])
-            line_data['major'].extend(line_array['major'])
-
+            with open(importlib.resources.files('prospect').joinpath("data", f"{line_category}_lines.txt"),
+                      encoding='utf-8') as LINES:
+                data = LINES.readlines()
+            name, longname, wavelength, vacuum, major = zip(*[line.strip().split(',') for line in data if not line.startswith('#')])
+            # wavelength = np.array([float(w) for w in wavelength])
+            vacuum = [k == 'True' for k in vacuum]
+            major = [k == 'True' for k in major]
+            # vacuum_wavelength = wavelength.copy()
+            vacuum_wavelength = np.array([float(w) if vacuum[i] else _airtovac(float(w)) for i, w in enumerate(wavelength)])
+            line_data['restwave'].extend(vacuum_wavelength.tolist())
+            line_data['plotwave'].extend((vacuum_wavelength * (1 + z)).tolist())
+            line_data['name'].extend(name)
+            line_data['longname'].extend(longname)
+            line_data['plotname'].extend(name)
+            line_data['emission'].extend([line_category == 'emission']*len(name))
+            line_data['major'].extend(major)
         self.cds_spectral_lines = ColumnDataSource(line_data)

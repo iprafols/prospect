@@ -1,9 +1,9 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 # -*- coding: utf-8 -*-
 """
-====================================
+===============================
 prospect.scripts.prospect_pages
-====================================
+===============================
 
 Create static html files to visually inspect DESI spectra.
 """
@@ -28,7 +28,7 @@ def _parse():
     parser = argparse.ArgumentParser(description='Create static html files to visually inspect DESI spectra. Spectra are selected from '
                                      'either a list of files (Mode: Explicit input files), or a given DESI directory tree to be parsed by prospect '
                                      ' (Mode: Scan directory tree)', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    
+
     #- Explicit file input
     parser.add_argument('--spectra_files', help='[Mode: Explicit input files] Absolute path of file(s) with DESI spectra. All input spectra files must have exactly the same format (fibermap, extra, scores...). Frames are not supported.', nargs='+', type=str, default=None)
     parser.add_argument('--spectra_file_list', help='[Mode: Explicit input files] ASCII file with list of DESI spectra files, one per row', type=str, default=None)
@@ -36,7 +36,7 @@ def _parse():
     parser.add_argument('--zcat_file_list', help='[Mode: Explicit input files] ASCII file with list of redshift catalog files, one per row', type=str, default=None)
     parser.add_argument('--redrock_details_files', help='[Mode: Explicit input files] Absolute path of detailed redrock file(s) (.h5), matched one-by-one to spectra_files', nargs='+', type=str, default=None)
     parser.add_argument('--redrock_details_file_list', help='[Mode: Explicit input files] ASCII file with list of detailed redrock files, one per row', type=str, default=None)
-    
+
     #- Selection-based file input (select data subsets based on tiles, expids...)
     parser.add_argument('--datadir', help='[Mode: Scan directory tree] Location of input directory tree (eg. $DESI_SPECTRO_REDUX/iron/healpix)', type=str, default=None)
     parser.add_argument('--dirtree_type', help='''[Mode: Scan directory tree] The following directory tree categories are supported:
@@ -85,12 +85,17 @@ def _parse():
     parser.add_argument('--titlepage_prefix', help='Prefix for html page title', type=str, default='DESI_spectra')
     parser.add_argument('--top_metadata', help="""List of fibermap's metadata to be highlighted (display in the most visible table).
         Note: if fibermap contains FIRST/LAST/NUM_XX, then including XX in top_metadata will display all of FIRST/LAST/NUM_XX.""", nargs='+', type=str, default=None)
+    parser.add_argument('--colors', help="""Customize the curve's colors: 3 colors should be given, associated respectively to the coadded data, the model and the noise.""", nargs='+', type=str, default=None)
     parser.add_argument('--no_imaging', dest='with_imaging', help='Do not include thumb images from https://www.legacysurvey.org/viewer', action='store_false')
     parser.add_argument('--no_noise', dest='with_noise', help='Do not display noise vectors associated to spectra', action='store_false')
+    parser.add_argument('--no_other_model', dest='with_other_model', help="""Do not display the 'other model' curve""", action='store_false')
     parser.add_argument('--no_thumb_tab', dest='with_thumb_tab', help='Do not include a tab with spectra thumbnails', action='store_false')
     parser.add_argument('--no_vi_widgets', dest='with_vi_widgets', help='Do not include widgets used to enter VI information', action='store_false')
     parser.add_argument('--no_coaddcam', dest='with_coaddcam', help='Do not include camera-coaddition (DESI only)', action='store_false')
     parser.add_argument('--vi_countdown', help='Countdown widget (in minutes)', type=int, default=-1)
+    parser.add_argument('--no_full_2ndfit', dest='with_full_2ndfit', help='Compute and display the second best-fit model without approximation (when available)', action='store_false')
+    parser.add_argument('--num_approx_fits', help='Number of best-fit models to display', type=int, default=4)
+    parser.add_argument('--zmax_slider', help='Maximum range of the redshift slider widget', type=float, default=5.0)
 
     #- Filtering at the spectra level
     parser.add_argument('--targeting_mask', help='Filter objects with a given targeting mask.', type=str, default=None)
@@ -114,7 +119,7 @@ def _parse():
 
 def _filter_list(args, filter_name):
     """ Make list of 'filter_name'
-        from either args.filter_names (values are explicitely given to parser) 
+        from either args.filter_names (values are explicitely given to parser)
         or args.filter_name_list (read file)
     """
     list_output = None
@@ -229,7 +234,7 @@ def load_spectra_zcat_from_dbentry(db_entry, args, log, with_redrock_version=Tru
         zcat = vstack(ztables)
     if args.with_multiple_models:
         redrock_cat = vstack(rrtables)
-        
+
     return (spectra, zcat, redrock_cat)
 
 
@@ -266,9 +271,11 @@ def page_subset(spectra, nspec_per_page, titlepage_prefix, viewer_params, log,
 
 
 def main():
+    """Entry-point for :command:`prospect_pages`.
+    """
     args = _parse()
     log = get_logger()
-    
+
     #- Two ways to provide input files
     if (args.spectra_files is None) and (args.spectra_file_list is None):
         input_mode = 'scan-dirtree'
@@ -292,15 +299,18 @@ def main():
         'top_metadata': args.top_metadata,
         'template_dir': args.template_dir,
         'vi_countdown': args.vi_countdown,
-        'num_approx_fits': None,
-        'with_full_2ndfit': False,
+        'num_approx_fits': args.num_approx_fits,
+        'with_full_2ndfit': args.with_full_2ndfit,
         'with_thumb_only_page': args.with_thumbnail_only_pages,
         'std_template_file': args.std_template_file,
+        'colors': args.colors,
         'with_imaging': args.with_imaging,
         'with_noise': args.with_noise,
+        'with_other_model': args.with_other_model,
         'with_thumb_tab': args.with_thumb_tab,
         'with_vi_widgets': args.with_vi_widgets,
-        'with_coaddcam': args.with_coaddcam
+        'with_coaddcam': args.with_coaddcam,
+        'zmax_slider': args.zmax_slider
     }
 
 
@@ -322,8 +332,6 @@ def main():
             if len(zcat_files)!=n_specfiles:
                 raise ValueError('Number of zcat_files does not match number of input spectra_files')
         if redrock_details_files is not None :
-            viewer_params['num_approx_fits'] = 4 # TODO un-hardcode ?
-            viewer_params['with_full_2ndfit'] = True # TODO un-hardcode ?
             if len(redrock_details_files)!=n_specfiles:
                 raise ValueError('Number of redrock_details_files does not match number of input spectra_files')
 
@@ -425,15 +433,13 @@ def main():
             if args.with_multiple_models:
                 spectra, zcat, redrock_cat = load_spectra_zcat_from_targets(targetids, args.datadir, target_db,
                                                     dirtree_type=args.dirtree_type, with_redrock_details=True)
-                viewer_params['num_approx_fits'] = 4 # TODO un-hardcode ?
-                viewer_params['with_full_2ndfit'] = True # TODO un-hardcode ?
             else:
                 spectra, zcat = load_spectra_zcat_from_targets(targetids, args.datadir, target_db,
                                                     dirtree_type=args.dirtree_type, with_redrock_details=False)
                 redrock_cat = None
             log.info('Prospect_pages: start creating html page(s)')
             n_done = page_subset(spectra, args.nspec_per_page, args.titlepage_prefix, viewer_params, log, zcat=zcat, redrock_cat=redrock_cat)
-        
+
         #- All spectra, possibly filtered based on some metadata
         else:
             log.info('Prospect_pages: start reading data [mode: Scan directory tree]')
@@ -448,9 +454,6 @@ def main():
                 if spectra is None:
                     log.info('No spectra found for this subset')
                     continue
-                if redrock_cat is not None:
-                    viewer_params['num_approx_fits'] = 4 # TODO un-hardcode ?
-                    viewer_params['with_full_2ndfit'] = True # TODO un-hardcode ?
                 #- Associate a subdirectory for each individual subset:
                 html_subdir = dataset+'-'+get_subset_label(db_entry['subset'], args.dirtree_type)
                 viewer_params['html_dir'] = os.path.join(args.outputdir, html_subdir)
@@ -467,5 +470,5 @@ def main():
     return 0
 
 
-    
+
 
